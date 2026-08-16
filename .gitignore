@@ -8,3 +8,4 @@
 .omx/
 .cargo-home/
 .cargo-local/
+crates/magpie_driver/target/
