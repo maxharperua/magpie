@@ -1311,6 +1311,8 @@ pub fn build(config: &DriverConfig) -> BuildResult {
                         if !result.artifacts.contains(&output) {
                             result.artifacts.push(output);
                         }
+                        // Emit function symbol manifest
+                        emit_fn_manifest(&mpir_modules, &output_path, &mut result);
                     }
                     Err(primary_err) => {
                         emit_driver_diag(
@@ -1328,6 +1330,8 @@ pub fn build(config: &DriverConfig) -> BuildResult {
                                 if !result.artifacts.contains(&output) {
                                     result.artifacts.push(output);
                                 }
+                                // Emit function symbol manifest
+                                emit_fn_manifest(&mpir_modules, &output_path, &mut result);
                             }
                             Err(fallback_err) => {
                                 let outputs = llvm_ir_paths
@@ -4847,6 +4851,33 @@ fn render_extern_module(module_name: &str, items: &[CExternItem]) -> String {
     }
     out.push_str("}\n");
     out
+}
+
+/// Write the function symbol manifest alongside the produced shared library.
+///
+/// Maps Magpie function names (e.g. `@handler`, `@get`) to their mangled
+/// ELF symbols (e.g. `mp$0$FN$N57WCSYQCR`).
+fn emit_fn_manifest(modules: &[MpirModule], output_path: &Path, result: &mut BuildResult) {
+    use std::collections::HashMap;
+    let manifest = magpie_codegen_llvm::generate_fn_manifest(modules);
+    if manifest.is_empty() {
+        return;
+    }
+    // Sort by function name for deterministic output
+    let sorted: HashMap<String, String> = {
+        let mut entries: Vec<_> = manifest.into_iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.into_iter().collect()
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&sorted) {
+        let manifest_path = output_path.with_extension("manifest");
+        if std::fs::write(&manifest_path, &json).is_ok() {
+            let path_str = manifest_path.to_string_lossy().to_string();
+            if !result.artifacts.contains(&path_str) {
+                result.artifacts.push(path_str);
+            }
+        }
+    }
 }
 
 fn stage_link_output_path(config: &DriverConfig) -> PathBuf {

@@ -4750,8 +4750,23 @@ impl<'a> FnBuilder<'a> {
     }
 }
 
-fn mangle_fn(sid: &Sid) -> String {
+pub fn mangle_fn(sid: &Sid) -> String {
     format!("mp$0$FN${}", sid_suffix(sid))
+}
+
+/// Generate a JSON function symbol manifest for all functions across all modules.
+///
+/// Maps Magpie function names (e.g. `@handler`, `@get`) to their mangled
+/// LLVM/ELF symbols (e.g. `mp$0$FN$N57WCSYQCR`).
+pub fn generate_fn_manifest(modules: &[MpirModule]) -> std::collections::HashMap<String, String> {
+    let mut manifest = std::collections::HashMap::new();
+    for module in modules {
+        for func in &module.functions {
+            let mangled = mangle_fn(&func.sid);
+            manifest.insert(func.name.clone(), mangled);
+        }
+    }
+    manifest
 }
 
 fn mangle_init_types(module_sid: &Sid) -> String {

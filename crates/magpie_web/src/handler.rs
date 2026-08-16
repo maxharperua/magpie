@@ -1,18 +1,17 @@
 //! Magpie route handler compilation and execution.
 //!
 //! This module compiles Magpie route files (`.mp`) to shared libraries (`.so`)
-//! and executes them at runtime, bridging HTTP requests to Magpie handler functions.
+//! and executes them via libloading, bridging HTTP requests to Magpie handler functions.
 //!
 //! # HTTP Method Routing
 //!
-//! Route files can define multiple handlers for different HTTP methods:
-//! - `fn @get() -> i32` for GET requests
-//! - `fn @post() -> i32` for POST requests
-//! - `fn @put() -> i32` for PUT requests
-//! - `fn @delete() -> i32` for DELETE requests
-//! - `fn @handler() -> i32` as fallback for any method
+//! Route files can define multiple handlers for different HTTP methods.
+//! The Magpie compiler emits a `.manifest` JSON file alongside each `.so`
+//! mapping Magpie function names (like `@get`, `@post`, `@handler`) to their
+//! mangled ELF symbols.
 //!
-//! The dev server tries method-specific handlers first, then falls back to `@handler`.
+//! The dev server tries method-specific handlers first (`@get` for GET, `@post`
+//! for POST, etc.), then falls back to `@handler`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,8 +20,6 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use libloading::Library;
-
-const HANDLER_PREFIX: &str = "mp$0$FN$";
 
 /// Cache of compiled route handlers.
 struct HandlerCache {
@@ -47,55 +44,66 @@ fn cache() -> &'static Mutex<HandlerCache> {
     CACHE.get_or_init(|| Mutex::new(HandlerCache::new()))
 }
 
-/// Find the mangled symbol name for a Magpie function in a .so file.
-fn find_symbol_by_name(so_path: &Path, func_name: &str) -> Result<Option<String>, String> {
+/// Map an HTTP method to the Magpie function name it should try first.
+fn method_to_handler_name(method: &str) -> &'static str {
+    match method.to_ascii_uppercase().as_str() {
+        "GET" => "@get",
+        "POST" => "@post",
+        "PUT" => "@put",
+        "DELETE" => "@delete",
+        "PATCH" => "@patch",
+        "HEAD" => "@head",
+        "OPTIONS" => "@options",
+        _ => "@handler",
+    }
+}
+
+/// Load the handler manifest JSON written by the Magpie compiler.
+///
+/// The compiler emits `<name>.manifest` alongside `<name>.so` containing a
+/// JSON object like `{"@handler": "mp$0$FN$...", "@get": "mp$0$FN$..."}`.
+fn load_handler_manifest(so_path: &Path) -> Result<HashMap<String, String>, String> {
+    let manifest_path = so_path.with_extension("manifest");
+    let raw = std::fs::read_to_string(&manifest_path).map_err(|e| {
+        format!(
+            "manifest not found at '{}': {e}",
+            manifest_path.display()
+        )
+    })?;
+    let parsed: HashMap<String, String> =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid manifest: {e}"))?;
+    Ok(parsed)
+}
+
+/// Fallback: find the first `mp$0$FN$` symbol in a .so using `nm -D`.
+///
+/// Used when no compiler-generated manifest is available (older compiled routes).
+fn find_first_handler_symbol(so_path: &Path) -> Result<String, String> {
     let output = Command::new("nm")
         .arg("-D")
         .arg(so_path)
         .output()
         .map_err(|e| format!("nm failed: {e}"))?;
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
         let parts: Vec<&str> = line.splitn(3, ' ').collect();
-        if parts.len() >= 3 && parts[1] == "T" && parts[2] == func_name {
-            return Ok(Some(func_name.to_string()));
-        }
-        if parts.len() >= 3 && parts[1] == "T" && parts[2].starts_with(HANDLER_PREFIX) {
-            // Check if this mangled symbol could be our function
-            // The mangled name encodes the function name hash, so we can't
-            // directly match. Instead, we cache it.
+        if parts.len() >= 3 && parts[1] == "T" {
+            let name = parts[2];
+            if name.contains("mp$0$FN$") && !name.contains("gpu") {
+                return Ok(name.to_string());
+            }
         }
     }
-    Ok(None)
+
+    Err(format!(
+        "no handler symbol found in '{}'",
+        so_path.display()
+    ))
 }
 
-/// Find the first mp$0$FN$ symbol in the .so (generic fallback).
-fn find_first_handler_symbol(so_path: &Path) -> Result<Option<String>, String> {
-    let sym_path = so_path.with_extension("sym");
-    if let Ok(name) = std::fs::read_to_string(&sym_path) {
-        let name = name.trim();
-        return Ok(Some(name.to_string()));
-    }
-
-    let output = Command::new("nm")
-        .arg("-D")
-        .arg(so_path)
-        .output()
-        .map_err(|e| format!("nm failed: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(3, ' ').collect();
-        if parts.len() >= 3 && parts[1] == "T" && parts[2].starts_with(HANDLER_PREFIX) {
-            let name = parts[2].to_string();
-            let _ = std::fs::write(&sym_path, &name);
-            return Ok(Some(name));
-        }
-    }
-    Ok(None)
-}
-
-/// Compile a Magpie route file to a shared library and return the path to the .so.
-pub fn compile_route_to_so(
+/// Compile a Magpie route file to a shared library.
+fn compile_route_to_so(
     route_path: &Path,
     magpie_home: &Path,
     out_dir: &Path,
@@ -162,30 +170,51 @@ std = {{ path = "{std_path}" }}
     // Find the produced .so file
     let so_name = format!("lib{route_name}.so");
     let so_path = build_release.join(&so_name);
-    if so_path.is_file() {
-        Ok(so_path)
+    let so_path = if so_path.is_file() {
+        so_path
     } else {
         let fallbacks = ["libindex.so", "libmain.so"];
+        let mut found = None;
         for fb in &fallbacks {
             let fb_path = build_release.join(fb);
             if fb_path.is_file() {
-                return Ok(fb_path);
+                found = Some(fb_path);
+                break;
             }
         }
-        Err(format!(
-            "shared library not found at '{}'",
-            so_path.display()
-        ))
-    }
+        found.ok_or_else(|| {
+            format!(
+                "shared library not found at '{}'",
+                so_path.display()
+            )
+        })?
+    };
+
+    Ok(so_path)
 }
 
 /// Execute a compiled Magpie route handler.
+///
+/// Compiles the `.mp` route file if needed, then loads the shared library
+/// and calls the correct method-specific function.
+///
+/// Sets process-global env vars (`MAGPIE_HTTP_[METHOD|PATH|BODY|QUERY]`) so the
+/// handler can access request data via `std.http` functions.
 pub fn execute_route_handler(
     route_path: &Path,
     magpie_home: &Path,
     cache_dir: &Path,
     method: &str,
+    path: &str,
+    body: &str,
+    query: &str,
 ) -> Result<i32, String> {
+    // Set process-global env vars so the handler .so can read request data.
+    std::env::set_var("MAGPIE_HTTP_METHOD", method);
+    std::env::set_var("MAGPIE_HTTP_PATH", path);
+    std::env::set_var("MAGPIE_HTTP_BODY", body);
+    std::env::set_var("MAGPIE_HTTP_QUERY", query);
+
     let last_modified = std::fs::metadata(route_path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -194,8 +223,8 @@ pub fn execute_route_handler(
 
     // Check cache
     {
-        let cache = cache().lock().map_err(|e| format!("cache lock: {e}"))?;
-        if let Some(entry) = cache.entries.get(&route_key) {
+        let cache_obj = cache().lock().map_err(|e| format!("cache lock: {e}"))?;
+        if let Some(entry) = cache_obj.entries.get(&route_key) {
             if entry.last_modified == last_modified && entry.so_path.is_file() {
                 return unsafe { call_handler(&entry.so_path, method) };
             }
@@ -206,9 +235,9 @@ pub fn execute_route_handler(
     let so_path = compile_route_to_so(route_path, magpie_home, cache_dir)?;
     let result = unsafe { call_handler(&so_path, method) };
 
-    // Update cache (keep last entry per method variant)
-    if let Ok(mut cache) = cache().lock() {
-        cache.entries.insert(
+    // Update cache
+    if let Ok(mut cache_obj) = cache().lock() {
+        cache_obj.entries.insert(
             route_key,
             CachedHandler {
                 so_path,
@@ -222,35 +251,102 @@ pub fn execute_route_handler(
 
 /// Load a .so and call the handler for the given HTTP method.
 ///
-/// Tries method-specific handler first (`@get`, `@post`, ...),
-/// then falls back to a generic `@handler`, then `@main`.
+/// 1. Tries the compiler-generated `.manifest` file for method-specific dispatch.
+/// 2. Falls back to `nm -D` first-symbol lookup for older routes.
 unsafe fn call_handler(so_path: &Path, method: &str) -> Result<i32, String> {
-    let lib = Library::new(so_path)
-        .map_err(|e| format!("failed to load .so '{}': {e}", so_path.display()))?;
-
-    // Determine the mangled symbol we're looking for
-    // We can't pre-compute the hash, so we try a discovery approach:
-    // 1. Try method-specific function (would need exact hash — skip for v0.1)
-    // 2. Find the first mp$0$FN$ symbol and call it
-
-    if let Ok(Some(sym)) = find_first_handler_symbol(so_path) {
-        if let Ok(handler) = lib.get::<unsafe extern "C" fn() -> i32>(sym.as_bytes()) {
-            let result = handler();
-            std::mem::forget(lib);
-            return Ok(result);
+    // Determine which function names to try
+    let target_name = method_to_handler_name(method);
+    let try_names: &[&str] = if target_name == "@handler" {
+        &["@handler"]
+    } else {
+        // Per method: try method-specific first, then fallback
+        if method.to_ascii_uppercase().as_str() == "GET" {
+            &["@get", "@handler"]
+        } else if method.to_ascii_uppercase().as_str() == "POST" {
+            &["@post", "@handler"]
+        } else if method.to_ascii_uppercase().as_str() == "PUT" {
+            &["@put", "@handler"]
+        } else if method.to_ascii_uppercase().as_str() == "DELETE" {
+            &["@delete", "@handler"]
+        } else {
+            &["@handler"]
         }
+    };
+
+    // Try compiler manifest first
+    if let Ok(manifest) = load_handler_manifest(so_path) {
+        let lib = Library::new(so_path)
+            .map_err(|e| format!("failed to load .so '{}': {e}", so_path.display()))?;
+
+        // 1. Run middleware chain (all @middleware_* functions)
+        let mut middleware_fns: Vec<&String> = manifest.keys()
+            .filter(|k| k.starts_with("@middleware_"))
+            .collect();
+        middleware_fns.sort();
+
+        for mw_name in &middleware_fns {
+            if let Some(mangled) = manifest.get(*mw_name) {
+                if let Ok(func) = lib.get::<unsafe extern "C" fn() -> i32>(mangled.as_bytes()) {
+                    let status = func();
+                    if status != 200 {
+                        std::mem::forget(lib);
+                        return Ok(status);
+                    }
+                }
+            }
+        }
+
+        // 2. Run main handler (method-specific, then fallback)
+        for name in try_names {
+            if let Some(mangled) = manifest.get(*name) {
+                if let Ok(func) = lib.get::<unsafe extern "C" fn() -> i32>(mangled.as_bytes()) {
+                    let result = func();
+                    std::mem::forget(lib);
+                    return Ok(result);
+                }
+            }
+        }
+
+        std::mem::forget(lib);
+        return Err(format!(
+            "no handler '{}' found in manifest for '{}'",
+            try_names.join("', '"),
+            so_path.display()
+        ));
     }
 
+    // Fallback: no manifest — find first handler symbol via nm -D
+    let symbol = find_first_handler_symbol(so_path)?;
+    let lib = Library::new(so_path)
+        .map_err(|e| format!("failed to load .so '{}': {e}", so_path.display()))?;
+    let func = lib
+        .get::<unsafe extern "C" fn() -> i32>(symbol.as_bytes())
+        .map_err(|e| format!("symbol lookup failed: {e}"))?;
+    let result = func();
     std::mem::forget(lib);
-    Err(format!(
-        "no handler symbol found in '{}'",
-        so_path.display()
-    ))
+    Ok(result)
 }
 
 /// Clear the handler cache.
 pub fn clear_handler_cache() {
-    if let Ok(mut cache) = cache().lock() {
-        cache.entries.clear();
+    if let Ok(mut cache_obj) = cache().lock() {
+        cache_obj.entries.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_method_to_handler_name() {
+        assert_eq!(method_to_handler_name("GET"), "@get");
+        assert_eq!(method_to_handler_name("POST"), "@post");
+        assert_eq!(method_to_handler_name("PUT"), "@put");
+        assert_eq!(method_to_handler_name("DELETE"), "@delete");
+        assert_eq!(method_to_handler_name("PATCH"), "@patch");
+        assert_eq!(method_to_handler_name("get"), "@get");
+        assert_eq!(method_to_handler_name("Get"), "@get");
+        assert_eq!(method_to_handler_name("UNKNOWN"), "@handler");
     }
 }

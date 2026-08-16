@@ -17,6 +17,7 @@ use std::sync::{Mutex, Once, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod db;
+mod http;
 
 // ---------------------------------------------------------------------------
 // §20.1.1  Object header

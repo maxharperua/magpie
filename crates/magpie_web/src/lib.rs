@@ -3405,7 +3405,10 @@ fn respond_dev_request(stream: &mut TcpStream, app_dir: &Path) -> Result<(), Str
             let cache_dir = app_dir.join(".cache").join("handlers");
             std::fs::create_dir_all(&cache_dir).ok();
 
-            match handler::execute_route_handler(&route_file, &magpie_home, &cache_dir, &method) {
+            match handler::execute_route_handler(
+                &route_file, &magpie_home, &cache_dir, &method, &request_path,
+                std::str::from_utf8(&body).unwrap_or(""), "",
+            ) {
                 Ok(status_code) => {
                     eprintln!("magpie web dev: handler for '{}' returned {}", request_path, status_code);
                     return write_http_response(

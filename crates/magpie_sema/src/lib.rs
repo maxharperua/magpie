@@ -3707,18 +3707,31 @@ fn resolve_fn_sid(
     resolved: &ResolvedModule,
     import_map: &HashMap<String, String>,
 ) -> Sid {
+    // 1. Try direct lookup in symbol table (works for unqualified names)
     if let Some(sym) = resolved.symbol_table.functions.get(callee) {
         return sym.sid.clone();
     }
 
+    // 2. Try import map (works for imported functions)
     if let Some(fqn) = import_map.get(callee) {
         return generate_sid('F', fqn);
     }
 
+    // 3. Try extern module lookup: if callee is "mod_name.fn_name", look up just "fn_name"
+    //    in the symbol table. Inline extern "C" module functions are registered with
+    //    the bare function name, but calls use the "extern_module.fn_name" form.
     if callee.contains('.') {
+        if let Some(dot_pos) = callee.rfind('.') {
+            let fn_name = &callee[dot_pos + 1..];
+            if let Some(sym) = resolved.symbol_table.functions.get(fn_name) {
+                return sym.sid.clone();
+            }
+        }
+        // Fallback: treat as FQN if no extern match
         return generate_sid('F', callee);
     }
 
+    // 4. Default: construct FQN from module_path.callee
     generate_sid('F', &format!("{}.{}", module_path, callee))
 }
 
