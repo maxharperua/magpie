@@ -1,6 +1,8 @@
 //! magpie_web
 #![allow(clippy::result_large_err)]
 
+pub mod handler;
+
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -3230,10 +3232,8 @@ fn write_generated_routes(manifest_dir: &Path, generated_routes: &str) -> Result
 fn compile_project(manifest_dir: &Path, release: bool) -> Result<(), String> {
     let manifest_path = manifest_dir.join("Cargo.toml");
     if !manifest_path.is_file() {
-        return Err(format!(
-            "project manifest not found at '{}'",
-            manifest_path.display()
-        ));
+        // No Cargo.toml — using JIT-compiled Magpie routes, skip Rust build
+        return Ok(());
     }
 
     let mut command = Command::new("cargo");
@@ -3381,22 +3381,37 @@ fn respond_dev_request(stream: &mut TcpStream, app_dir: &Path) -> Result<(), Str
     }
 
     if let Some(route_file) = resolve_route_file(app_dir, &request_path) {
-        return match std::fs::read(&route_file) {
-            Ok(bytes) => {
-                write_http_response(stream, "200 OK", content_type_for_path(&route_file), &bytes)
+        // Try to compile and execute the Magpie route handler
+        let magpie_home = std::env::var("MAGPIE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/home/deploy/magpie"));
+        let cache_dir = app_dir.join(".cache").join("handlers");
+        std::fs::create_dir_all(&cache_dir).ok();
+
+        match handler::execute_route_handler(&route_file, &magpie_home, &cache_dir) {
+                    Ok(status_code) => {
+                        eprintln!("magpie web dev: handler for '{}' returned {}", request_path, status_code);
+                        return write_http_response(
+                            stream,
+                            &format!("200 OK"),
+                            "text/plain; charset=utf-8",
+                            format!("Magpie handler returned: {}", status_code).as_bytes(),
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("magpie web dev: handler error for '{}': {}", request_path, err);
+                        return write_http_response(
+                            stream,
+                            "200 OK",
+                            "text/plain; charset=utf-8",
+                            // On compilation failure, fall back to serving source
+                            std::fs::read(&route_file)
+                                .unwrap_or_else(|_| format!("// handler error: {err}").into_bytes())
+                                .as_slice(),
+                        );
+                    }
+                }
             }
-            Err(err) => write_http_response(
-                stream,
-                "500 Internal Server Error",
-                "text/plain; charset=utf-8",
-                format!(
-                    "failed to read route source '{}': {err}",
-                    route_file.display()
-                )
-                .as_bytes(),
-            ),
-        };
-    }
 
     let mappings = scan_webapp_routes(app_dir).unwrap_or_default();
     let mut body = String::new();
