@@ -5668,6 +5668,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -5749,6 +5750,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -5823,6 +5825,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -5908,6 +5911,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -5986,6 +5990,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -6071,6 +6076,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -6160,6 +6166,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -6245,6 +6252,7 @@ mod tests {
                 params: vec![],
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -6379,6 +6387,7 @@ mod tests {
                     is_unsafe: false,
                 },
             ],
+            extern_fns: vec![],
         };
 
         let mut sym = SymbolTable::default();
@@ -6391,6 +6400,7 @@ mod tests {
                 params: vec![key_borrow],
                 ret_ty: fixed_type_ids::U64,
                 is_unsafe: false,
+                link_name: None,
             },
         );
         sym.functions.insert(
@@ -6402,6 +6412,7 @@ mod tests {
                 params: vec![key_borrow, key_borrow],
                 ret_ty: fixed_type_ids::BOOL,
                 is_unsafe: false,
+                link_name: None,
             },
         );
         sym.functions.insert(
@@ -6413,6 +6424,7 @@ mod tests {
                 params: Vec::new(),
                 ret_ty: fixed_type_ids::I32,
                 is_unsafe: false,
+                link_name: None,
             },
         );
 
@@ -6486,6 +6498,7 @@ mod tests {
             }],
             globals: Vec::new(),
             functions: Vec::new(),
+            extern_fns: vec![],
         };
         let sym = SymbolTable::default();
         let impl_decls = vec![AstImplDecl {

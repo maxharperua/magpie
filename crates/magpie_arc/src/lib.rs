@@ -1386,6 +1386,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);
@@ -1434,6 +1435,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         optimize_arc(&mut module, &type_ctx);
@@ -1589,6 +1591,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(32);

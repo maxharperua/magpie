@@ -515,6 +515,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let wat = emit_wat_module(&module);

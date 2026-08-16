@@ -2,7 +2,7 @@
 #![allow(clippy::too_many_arguments, clippy::write_with_newline)]
 
 use magpie_mpir::{
-    HirConst, HirConstLit, MpirBlock, MpirExternFn, MpirFn, MpirInstr, MpirModule, MpirOp,
+    HirConst, HirConstLit, MpirBlock, MpirFn, MpirInstr, MpirModule, MpirOp,
     MpirOpVoid, MpirTerminator, MpirValue,
 };
 use magpie_types::{

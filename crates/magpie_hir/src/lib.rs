@@ -1330,6 +1330,7 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
+        extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);
@@ -1390,6 +1391,7 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
+        extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);

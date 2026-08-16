@@ -2322,6 +2322,7 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);
@@ -2465,6 +2466,7 @@ mod tests {
                     ("weak_str".to_string(), weak_str),
                 ],
             }],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(32);
@@ -2555,6 +2557,7 @@ mod tests {
             ],
             globals: vec![],
             type_decls: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(32);
@@ -2622,6 +2625,7 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(32);

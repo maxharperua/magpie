@@ -7189,7 +7189,8 @@ bb0:
                         fields: vec![("e".to_string(), old(41))],
                     }],
                 },
-            ],
+],
+            extern_fns: vec![],
         };
 
         remap_hir_modules_type_ids(std::slice::from_mut(&mut module), &remap);
