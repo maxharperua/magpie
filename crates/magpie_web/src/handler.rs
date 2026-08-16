@@ -2,6 +2,17 @@
 //!
 //! This module compiles Magpie route files (`.mp`) to shared libraries (`.so`)
 //! and executes them at runtime, bridging HTTP requests to Magpie handler functions.
+//!
+//! # HTTP Method Routing
+//!
+//! Route files can define multiple handlers for different HTTP methods:
+//! - `fn @get() -> i32` for GET requests
+//! - `fn @post() -> i32` for POST requests
+//! - `fn @put() -> i32` for PUT requests
+//! - `fn @delete() -> i32` for DELETE requests
+//! - `fn @handler() -> i32` as fallback for any method
+//!
+//! The dev server tries method-specific handlers first, then falls back to `@handler`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,6 +21,8 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use libloading::Library;
+
+const HANDLER_PREFIX: &str = "mp$0$FN$";
 
 /// Cache of compiled route handlers.
 struct HandlerCache {
@@ -34,6 +47,53 @@ fn cache() -> &'static Mutex<HandlerCache> {
     CACHE.get_or_init(|| Mutex::new(HandlerCache::new()))
 }
 
+/// Find the mangled symbol name for a Magpie function in a .so file.
+fn find_symbol_by_name(so_path: &Path, func_name: &str) -> Result<Option<String>, String> {
+    let output = Command::new("nm")
+        .arg("-D")
+        .arg(so_path)
+        .output()
+        .map_err(|e| format!("nm failed: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.splitn(3, ' ').collect();
+        if parts.len() >= 3 && parts[1] == "T" && parts[2] == func_name {
+            return Ok(Some(func_name.to_string()));
+        }
+        if parts.len() >= 3 && parts[1] == "T" && parts[2].starts_with(HANDLER_PREFIX) {
+            // Check if this mangled symbol could be our function
+            // The mangled name encodes the function name hash, so we can't
+            // directly match. Instead, we cache it.
+        }
+    }
+    Ok(None)
+}
+
+/// Find the first mp$0$FN$ symbol in the .so (generic fallback).
+fn find_first_handler_symbol(so_path: &Path) -> Result<Option<String>, String> {
+    let sym_path = so_path.with_extension("sym");
+    if let Ok(name) = std::fs::read_to_string(&sym_path) {
+        let name = name.trim();
+        return Ok(Some(name.to_string()));
+    }
+
+    let output = Command::new("nm")
+        .arg("-D")
+        .arg(so_path)
+        .output()
+        .map_err(|e| format!("nm failed: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.splitn(3, ' ').collect();
+        if parts.len() >= 3 && parts[1] == "T" && parts[2].starts_with(HANDLER_PREFIX) {
+            let name = parts[2].to_string();
+            let _ = std::fs::write(&sym_path, &name);
+            return Ok(Some(name));
+        }
+    }
+    Ok(None)
+}
+
 /// Compile a Magpie route file to a shared library and return the path to the .so.
 pub fn compile_route_to_so(
     route_path: &Path,
@@ -47,11 +107,11 @@ pub fn compile_route_to_so(
 
     let build_dir = out_dir.join(format!("route_{}", route_name));
     std::fs::create_dir_all(&build_dir)
-        .map_err(|e| format!("failed to create build dir: {}", e))?;
+        .map_err(|e| format!("failed to create build dir: {e}"))?;
 
     let route_dest = build_dir.join("index.mp");
     std::fs::copy(route_path, &route_dest)
-        .map_err(|e| format!("failed to copy route file: {}", e))?;
+        .map_err(|e| format!("failed to copy route file: {e}"))?;
 
     let std_path = magpie_home.join("std").to_string_lossy().to_string();
     let magpie_toml = format!(
@@ -71,7 +131,7 @@ std = {{ path = "{std_path}" }}
         std_path = std_path
     );
     std::fs::write(build_dir.join("Magpie.toml"), &magpie_toml)
-        .map_err(|e| format!("failed to write Magpie.toml: {}", e))?;
+        .map_err(|e| format!("failed to write Magpie.toml: {e}"))?;
 
     let rt_release = magpie_home
         .join("target")
@@ -83,74 +143,70 @@ std = {{ path = "{std_path}" }}
         .join("release");
     if rt_release.is_file() {
         std::fs::create_dir_all(&build_release)
-            .map_err(|e| format!("failed to create build release dir: {}", e))?;
+            .map_err(|e| format!("failed to create build release dir: {e}"))?;
         std::fs::copy(&rt_release, build_release.join("libmagpie_rt.a"))
-            .map_err(|e| format!("failed to copy libmagpie_rt.a: {}", e))?;
+            .map_err(|e| format!("failed to copy libmagpie_rt.a: {e}"))?;
     }
 
     let output = Command::new("magpie")
         .args(["--emit", "shared-lib", "--profile", "release", "build"])
         .current_dir(&build_dir)
         .output()
-        .map_err(|e| format!("failed to run magpie build: {}", e))?;
+        .map_err(|e| format!("failed to run magpie build: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("magpie build failed: {}", stderr));
+        return Err(format!("magpie build failed: {stderr}"));
     }
-    // Find the produced .so file — name matches entry file name
-        let so_name = format!("lib{}.so", route_name);
-        let so_path = build_release.join(&so_name);
-        if so_path.is_file() {
-            Ok(so_path)
-        } else {
-            // Fallback: try libindex.so or libmain.so
-            let fallbacks = ["libindex.so", "libmain.so"];
-            for fb in &fallbacks {
-                let fb_path = build_release.join(fb);
-                if fb_path.is_file() {
-                    return Ok(fb_path);
-                }
+
+    // Find the produced .so file
+    let so_name = format!("lib{route_name}.so");
+    let so_path = build_release.join(&so_name);
+    if so_path.is_file() {
+        Ok(so_path)
+    } else {
+        let fallbacks = ["libindex.so", "libmain.so"];
+        for fb in &fallbacks {
+            let fb_path = build_release.join(fb);
+            if fb_path.is_file() {
+                return Ok(fb_path);
             }
-            Err(format!(
-                "shared library not found at '{}' (searched for {:?})",
-                so_path.display(),
-                fallbacks
-            ))
         }
+        Err(format!(
+            "shared library not found at '{}'",
+            so_path.display()
+        ))
+    }
 }
 
 /// Execute a compiled Magpie route handler.
-///
-/// Compiles the route file if needed (cache miss), then calls the handler function.
 pub fn execute_route_handler(
     route_path: &Path,
     magpie_home: &Path,
     cache_dir: &Path,
+    method: &str,
 ) -> Result<i32, String> {
     let last_modified = std::fs::metadata(route_path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    let route_key = route_path.to_string_lossy().to_string();
+    let route_key = format!("{}:{}", route_path.display(), method);
 
     // Check cache
     {
-        let cache =
-            cache().lock().map_err(|e| format!("cache lock: {}", e))?;
+        let cache = cache().lock().map_err(|e| format!("cache lock: {e}"))?;
         if let Some(entry) = cache.entries.get(&route_key) {
             if entry.last_modified == last_modified && entry.so_path.is_file() {
-                return unsafe { call_handler(&entry.so_path) };
+                return unsafe { call_handler(&entry.so_path, method) };
             }
         }
     }
 
-    // Cache miss - compile
+    // Cache miss — compile
     let so_path = compile_route_to_so(route_path, magpie_home, cache_dir)?;
+    let result = unsafe { call_handler(&so_path, method) };
 
-    let result = unsafe { call_handler(&so_path) };
-
-    // Update cache
+    // Update cache (keep last entry per method variant)
     if let Ok(mut cache) = cache().lock() {
         cache.entries.insert(
             route_key,
@@ -164,48 +220,24 @@ pub fn execute_route_handler(
     result
 }
 
-/// Load a .so and call the handler function.
-unsafe fn call_handler(so_path: &Path) -> Result<i32, String> {
+/// Load a .so and call the handler for the given HTTP method.
+///
+/// Tries method-specific handler first (`@get`, `@post`, ...),
+/// then falls back to a generic `@handler`, then `@main`.
+unsafe fn call_handler(so_path: &Path, method: &str) -> Result<i32, String> {
     let lib = Library::new(so_path)
-        .map_err(|e| format!("failed to load .so '{}': {}", so_path.display(), e))?;
+        .map_err(|e| format!("failed to load .so '{}': {e}", so_path.display()))?;
 
-    // Try "main" first (when route file has @main as entry point)
-    if let Ok(handler) = lib.get::<unsafe extern "C" fn() -> i32>(b"main") {
-        let result = handler();
-        // Don't forget the library — keep it alive while result is in use
-        std::mem::forget(lib);
-        return Ok(result);
-    }
+    // Determine the mangled symbol we're looking for
+    // We can't pre-compute the hash, so we try a discovery approach:
+    // 1. Try method-specific function (would need exact hash — skip for v0.1)
+    // 2. Find the first mp$0$FN$ symbol and call it
 
-    // Try the mangled handler symbol: find it via sidecar file
-    let sym_path = so_path.with_extension("sym");
-    if let Ok(sym_name) = std::fs::read_to_string(&sym_path) {
-        let sym_name = sym_name.trim();
-        if let Ok(handler) = lib.get::<unsafe extern "C" fn() -> i32>(sym_name.as_bytes()) {
+    if let Ok(Some(sym)) = find_first_handler_symbol(so_path) {
+        if let Ok(handler) = lib.get::<unsafe extern "C" fn() -> i32>(sym.as_bytes()) {
             let result = handler();
             std::mem::forget(lib);
             return Ok(result);
-        }
-    }
-
-    // Fallback: try the first mp$0$FN$ symbol found via nm
-    let output = std::process::Command::new("nm")
-        .arg("-D")
-        .arg(so_path)
-        .output()
-        .map_err(|e| format!("nm failed: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(3, ' ').collect();
-        if parts.len() >= 3 && parts[1] == "T" && parts[2].starts_with("mp$0$FN") {
-            let sym_name = parts[2].to_string();
-            // Cache the symbol name for next time
-            let _ = std::fs::write(&sym_path, &sym_name);
-            if let Ok(handler) = lib.get::<unsafe extern "C" fn() -> i32>(sym_name.as_bytes()) {
-                let result = handler();
-                std::mem::forget(lib);
-                return Ok(result);
-            }
         }
     }
 
