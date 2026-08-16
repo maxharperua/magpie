@@ -15,5 +15,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 libloading = "0.8"
+rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"

@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod api_handler;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TRequest {
     pub method: String,
@@ -3305,8 +3307,8 @@ fn content_type_for_path(path: &Path) -> &'static str {
     }
 }
 
-fn read_dev_request_path(stream: &mut TcpStream) -> Option<(String, String)> {
-    let mut request_buf = [0_u8; 4096];
+fn read_dev_request_path(stream: &mut TcpStream) -> Option<(String, String, Vec<u8>)> {
+    let mut request_buf = [0_u8; 8192];
     let read_bytes = stream.read(&mut request_buf).ok()?;
     let request = std::str::from_utf8(&request_buf[..read_bytes]).ok()?;
     let (method, path_with_query) = parse_http_request_line(request)?;
@@ -3314,7 +3316,18 @@ fn read_dev_request_path(stream: &mut TcpStream) -> Option<(String, String)> {
         .split_once('?')
         .map(|(path, _)| path.to_string())
         .unwrap_or(path_with_query);
-    Some((method, path))
+
+    // Extract body after headers
+    let body = if let Some(idx) = request_buf[..read_bytes]
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+    {
+        request_buf[idx + 4..read_bytes].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Some((method, path, body))
 }
 
 fn resolve_asset_path(app_dir: &Path, request_path: &str) -> Option<PathBuf> {
@@ -3348,7 +3361,7 @@ fn resolve_route_file(app_dir: &Path, request_path: &str) -> Option<PathBuf> {
 }
 
 fn respond_dev_request(stream: &mut TcpStream, app_dir: &Path) -> Result<(), String> {
-    let Some((method, request_path)) = read_dev_request_path(stream) else {
+    let Some((method, request_path, body)) = read_dev_request_path(stream) else {
         return write_http_response(
             stream,
             "400 Bad Request",
@@ -3356,6 +3369,13 @@ fn respond_dev_request(stream: &mut TcpStream, app_dir: &Path) -> Result<(), Str
             b"invalid HTTP request",
         );
     };
+
+    // Intercept /api paths — handle directly in Rust, bypass Magpie compiler
+    if request_path.starts_with("/api") {
+        let (status, content_type, bytes) =
+            api_handler::handle_api_request(&method, &request_path, &body, app_dir);
+        return write_http_response(stream, &status, &content_type, &bytes);
+    }
 
     // For root path, serve app/index.html as default index page
     let check_path = if request_path == "/" || request_path == "" {
