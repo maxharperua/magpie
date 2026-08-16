@@ -2,8 +2,8 @@
 #![allow(clippy::too_many_arguments, clippy::write_with_newline)]
 
 use magpie_mpir::{
-    HirConst, HirConstLit, MpirBlock, MpirFn, MpirInstr, MpirModule, MpirOp, MpirOpVoid,
-    MpirTerminator, MpirValue,
+    HirConst, HirConstLit, MpirBlock, MpirExternFn, MpirFn, MpirInstr, MpirModule, MpirOp,
+    MpirOpVoid, MpirTerminator, MpirValue,
 };
 use magpie_types::{
     fixed_type_ids, HandleKind, HeapBase, PrimType, Sid, TypeCtx, TypeId, TypeKind,
@@ -110,6 +110,7 @@ impl<'a> LlvmTextCodegen<'a> {
         }
 
         self.emit_declarations(&mut out)?;
+        self.emit_extern_declarations(&mut out)?;
         writeln!(out).map_err(|e| e.to_string())?;
         let runtime_registry = self.emit_runtime_type_registry_globals(&mut out)?;
         if runtime_registry.is_some() {
@@ -692,6 +693,33 @@ impl<'a> LlvmTextCodegen<'a> {
             ))
         )
     }
+
+    /// Resolve a function Sid to its LLVM symbol name.
+    /// For extern functions, uses the C link_name instead of mangling.
+    fn fn_name_for_sid(&self, sid: &Sid) -> String {
+        for ext in &self.mpir.extern_fns {
+            if ext.sid == *sid {
+                return ext.link_name.clone();
+            }
+        }
+        mangle_fn(sid)
+    }
+
+    /// Emit `declare` for all extern "C" module functions.
+    fn emit_extern_declarations(&self, out: &mut String) -> Result<(), String> {
+        for ext in &self.mpir.extern_fns {
+            let ret_ty = self.llvm_ty(ext.ret_ty);
+            let params = ext
+                .params
+                .iter()
+                .map(|t| self.llvm_ty(*t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "declare {ret_ty} @{}({params})", ext.link_name)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -1211,7 +1239,7 @@ impl<'a> FnBuilder<'a> {
                 callee_sid, args, ..
             } => {
                 let args = self.call_args(args)?;
-                let name = mangle_fn(callee_sid);
+                let name = self.cg.fn_name_for_sid(callee_sid);
                 if dst_ty == "void" {
                     writeln!(self.out, "  call void @{}({})", name, args)
                         .map_err(|e| e.to_string())?;
@@ -1233,7 +1261,7 @@ impl<'a> FnBuilder<'a> {
             } => {
                 // v0.1: async lowering should run before codegen; emit as a regular call.
                 let args = self.call_args(args)?;
-                let name = mangle_fn(callee_sid);
+                let name = self.cg.fn_name_for_sid(callee_sid);
                 if dst_ty == "void" {
                     writeln!(self.out, "  call void @{}({})", name, args)
                         .map_err(|e| e.to_string())?;
@@ -2302,7 +2330,7 @@ impl<'a> FnBuilder<'a> {
                 callee_sid, args, ..
             } => {
                 let args = self.call_args(args)?;
-                writeln!(self.out, "  call void @{}({})", mangle_fn(callee_sid), args)
+                writeln!(self.out, "  call void @{}({})", self.cg.fn_name_for_sid(callee_sid), args)
                     .map_err(|e| e.to_string())?;
             }
             MpirOpVoid::CallVoidIndirect { callee, args } => {
@@ -5378,6 +5406,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -5426,6 +5455,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let default_ir = codegen_module(&module, &type_ctx).expect("default codegen should pass");
@@ -5482,6 +5512,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -5643,6 +5674,7 @@ mod tests {
             type_table: MpirTypeTable { types: vec![] },
             functions: vec![kernel_fn, main_fn],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("gpu lowering should succeed");
@@ -5676,6 +5708,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -5727,6 +5760,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -5772,6 +5806,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -5888,6 +5923,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -5977,6 +6013,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6064,6 +6101,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6144,6 +6182,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6244,6 +6283,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6361,6 +6401,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6483,6 +6524,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6605,6 +6647,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6727,6 +6770,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -6849,6 +6893,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7038,6 +7083,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7240,6 +7286,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7388,6 +7435,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7577,6 +7625,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7763,6 +7812,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7873,6 +7923,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -7929,6 +7980,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -8094,6 +8146,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -8193,6 +8246,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -8319,6 +8373,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");
@@ -8438,6 +8493,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let llvm_ir = codegen_module(&module, &type_ctx).expect("codegen should succeed");

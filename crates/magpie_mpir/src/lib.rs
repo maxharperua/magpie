@@ -661,6 +661,16 @@ pub struct MpirTypeTable {
     pub types: Vec<(TypeId, TypeKind)>,
 }
 
+/// A declared extern "C" function in the module.
+#[derive(Clone, Debug)]
+pub struct MpirExternFn {
+    pub sid: Sid,
+    pub name: String,
+    pub link_name: String,
+    pub params: Vec<TypeId>,
+    pub ret_ty: TypeId,
+}
+
 /// MPIR module — the unit of compilation output.
 #[derive(Clone, Debug)]
 pub struct MpirModule {
@@ -669,6 +679,7 @@ pub struct MpirModule {
     pub type_table: MpirTypeTable,
     pub functions: Vec<MpirFn>,
     pub globals: Vec<(GlobalId, TypeId, HirConst)>,
+    pub extern_fns: Vec<MpirExternFn>,
 }
 
 /// Print MPIR in textual form (§15.3-15.6).
@@ -687,7 +698,26 @@ pub fn print_mpir(module: &MpirModule, type_ctx: &TypeCtx) -> String {
 
     out.push_str(&format_type_table(&module.type_table, type_ctx));
 
-    writeln!(out, "externs {{ }}").unwrap();
+    if module.extern_fns.is_empty() {
+        writeln!(out, "externs {{ }}").unwrap();
+    } else {
+        writeln!(out, "externs {{").unwrap();
+        for ext in &module.extern_fns {
+            let params = ext
+                .params
+                .iter()
+                .map(|t| format!("type_id {}", t.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(
+                out,
+                "  fn @{}({}) -> type_id {} link_name \"{}\"",
+                ext.name, params, ext.ret_ty.0, ext.link_name
+            )
+            .unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+    }
 
     if module.globals.is_empty() {
         writeln!(out, "globals {{ }}").unwrap();
@@ -2234,6 +2264,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let printed = print_mpir(&module, &type_ctx);
@@ -2260,6 +2291,7 @@ mod tests {
             type_table: MpirTypeTable { types: vec![] },
             functions: vec![],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let printed = print_mpir(&module, &type_ctx);
@@ -2329,6 +2361,7 @@ mod tests {
                 },
             ],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);
@@ -2382,6 +2415,7 @@ mod tests {
                 gpu_meta: None,
             }],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);
@@ -2443,6 +2477,7 @@ mod tests {
                 },
             ],
             globals: vec![],
+            extern_fns: vec![],
         };
 
         let mut diag = DiagnosticBag::new(16);

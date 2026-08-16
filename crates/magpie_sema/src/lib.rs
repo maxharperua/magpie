@@ -11,9 +11,9 @@ use magpie_ast::{
 };
 use magpie_diag::{Diagnostic, DiagnosticBag, Severity};
 use magpie_hir::{
-    BlockId, FnId, GlobalId, HirBlock, HirConst, HirConstLit, HirEnumVariant, HirFunction,
-    HirGlobal, HirInstr, HirModule, HirOp, HirOpVoid, HirTerminator, HirTypeDecl, HirValue,
-    LocalId,
+    BlockId, FnId, GlobalId, HirBlock, HirConst, HirConstLit, HirEnumVariant, HirExternFn,
+    HirFunction, HirGlobal, HirInstr, HirModule, HirOp, HirOpVoid, HirTerminator, HirTypeDecl,
+    HirValue, LocalId,
 };
 use magpie_types::{
     fixed_type_ids, HandleKind, HeapBase, ModuleId, PrimType, Sid, TypeCtx, TypeId, TypeKind,
@@ -29,6 +29,7 @@ pub struct FnSymbol {
     pub params: Vec<TypeId>,
     pub ret_ty: TypeId,
     pub is_unsafe: bool,
+    pub link_name: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -333,6 +334,12 @@ pub fn resolve_modules(
                         if let Some(sym) = module.symbol_table.functions.get_mut(&item.name) {
                             sym.params = params;
                             sym.ret_ty = ret_ty;
+                            // Store link_name from attrs for extern "C" module functions
+                            sym.link_name = item
+                                .attrs
+                                .iter()
+                                .find(|(key, _)| key == "link_name")
+                                .map(|(_, value)| value.clone());
                         }
                     }
                 }
@@ -721,6 +728,49 @@ pub fn lower_to_hir(
         next_fn += 1;
     }
 
+    let mut extern_fns = Vec::new();
+    for decl in &resolved.ast.decls {
+        if let AstDecl::Extern(ext) = &decl.node {
+            for item in &ext.items {
+                if let Some(sym) = resolved.symbol_table.functions.get(&item.name) {
+                    if let Some(link_name) = &sym.link_name {
+                        let params = item
+                            .params
+                            .iter()
+                            .map(|p| {
+                                ast_type_to_type_id(
+                                    &p.ty.node,
+                                    &module_path,
+                                    &resolved.symbol_table,
+                                    &import_map,
+                                    &value_types,
+                                    type_ctx,
+                                    diag,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let ret_ty = ast_type_to_type_id(
+                            &item.ret_ty.node,
+                            &module_path,
+                            &resolved.symbol_table,
+                            &import_map,
+                            &value_types,
+                            type_ctx,
+                            diag,
+                        );
+                        extern_fns.push(HirExternFn {
+                            sid: sym.sid.clone(),
+                            name: item.name.clone(),
+                            link_name: link_name.clone(),
+                            params,
+                            ret_ty,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     let hir = HirModule {
         module_id: resolved.module_id,
         sid: generate_sid('M', &module_path),
@@ -728,6 +778,7 @@ pub fn lower_to_hir(
         functions,
         globals,
         type_decls,
+        extern_fns,
     };
 
     if diag.error_count() > before {
@@ -3531,6 +3582,7 @@ fn insert_fn_symbol(
             params: Vec::new(),
             ret_ty: fixed_type_ids::UNIT,
             is_unsafe,
+            link_name: None,
         },
     );
 }
@@ -5603,7 +5655,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -5683,7 +5736,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -5756,7 +5810,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -5840,7 +5895,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -5917,7 +5973,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -6001,7 +6058,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -6089,7 +6147,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(
@@ -6173,7 +6232,8 @@ mod tests {
             }],
             globals: vec![],
             type_decls: vec![],
-        };
+                    extern_fns: vec![],
+                };
 
         let mut sym = SymbolTable::default();
         sym.functions.insert(

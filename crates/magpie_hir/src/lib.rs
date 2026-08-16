@@ -674,6 +674,16 @@ pub struct HirEnumVariant {
     pub fields: Vec<(String, TypeId)>,
 }
 
+/// An extern "C" function declaration (e.g., from `extern "C" module { fn @println(s: Str): i64 }`)
+#[derive(Clone, Debug)]
+pub struct HirExternFn {
+    pub sid: Sid,
+    pub name: String,
+    pub link_name: String,
+    pub params: Vec<TypeId>,
+    pub ret_ty: TypeId,
+}
+
 /// A HIR module — the top-level compilation unit.
 #[derive(Clone, Debug)]
 pub struct HirModule {
@@ -683,6 +693,7 @@ pub struct HirModule {
     pub functions: Vec<HirFunction>,
     pub globals: Vec<HirGlobal>,
     pub type_decls: Vec<HirTypeDecl>,
+    pub extern_fns: Vec<HirExternFn>,
 }
 
 // ── HIR Verifier (§16.6) ─────────────────────────────────────────────────────

@@ -30,8 +30,8 @@ use magpie_lex::lex;
 use magpie_memory::{build_index_with_sources, MmsItem, MmsSourceFingerprint};
 use magpie_mono::monomorphize;
 use magpie_mpir::{
-    print_mpir, verify_mpir, MpirBlock, MpirFn, MpirGpuMeta, MpirInstr, MpirLocalDecl, MpirModule,
-    MpirOp, MpirOpVoid, MpirTerminator, MpirTypeTable, MpirValue,
+    print_mpir, verify_mpir, MpirBlock, MpirExternFn, MpirFn, MpirGpuMeta, MpirInstr,
+    MpirLocalDecl, MpirModule, MpirOp, MpirOpVoid, MpirTerminator, MpirTypeTable, MpirValue,
 };
 use magpie_own::check_ownership;
 use magpie_parse::parse_file;
@@ -782,6 +782,15 @@ pub fn build(config: &DriverConfig) -> BuildResult {
         let mut diag = DiagnosticBag::new(max_errors);
         for module in &hir_modules {
             mpir_modules.push(lower_hir_module_to_mpir(module, &type_ctx));
+        }
+        // Merge extern functions from ALL modules into each module
+        // so codegen can resolve cross-module extern calls (e.g. hello.mp → std.io.@println).
+        let all_extern_fns: Vec<MpirExternFn> = mpir_modules
+            .iter()
+            .flat_map(|m| m.extern_fns.clone())
+            .collect();
+        for module in &mut mpir_modules {
+            module.extern_fns = all_extern_fns.clone();
         }
         if mpir_modules.is_empty() {
             emit_driver_diag(
@@ -3860,6 +3869,17 @@ pub fn lower_hir_module_to_mpir(module: &HirModule, type_ctx: &TypeCtx) -> MpirM
             .globals
             .iter()
             .map(|g| (g.id, g.ty, g.init.clone()))
+            .collect(),
+        extern_fns: module
+            .extern_fns
+            .iter()
+            .map(|e| MpirExternFn {
+                sid: e.sid.clone(),
+                name: e.name.clone(),
+                link_name: e.link_name.clone(),
+                params: e.params.clone(),
+                ret_ty: e.ret_ty,
+            })
             .collect(),
     }
 }
