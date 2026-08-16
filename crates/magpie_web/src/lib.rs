@@ -3357,17 +3357,22 @@ fn respond_dev_request(stream: &mut TcpStream, app_dir: &Path) -> Result<(), Str
         );
     };
 
-    let base_path = app_dir.join(&request_path);
-    if base_path.is_file() {
-        return match std::fs::read(&base_path) {
+    // For root path, serve app/index.html as default index page
+    let check_path = if request_path == "/" || request_path == "" {
+        app_dir.join("index.html")
+    } else {
+        app_dir.join(&request_path)
+    };
+    if check_path.is_file() {
+        return match std::fs::read(&check_path) {
             Ok(bytes) => {
-                write_http_response(stream, "200 OK", content_type_for_path(&base_path), &bytes)
+                write_http_response(stream, "200 OK", content_type_for_path(&check_path), &bytes)
             }
             Err(err) => write_http_response(
                 stream,
                 "500 Internal Server Error",
                 "text/plain; charset=utf-8",
-                format!("failed to read '{}': {err}", base_path.display()).as_bytes(),
+                format!("failed to read '{}': {err}", check_path.display()).as_bytes(),
             ),
         };
     }
