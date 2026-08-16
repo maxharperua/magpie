@@ -3431,7 +3431,7 @@ fn respond_dev_request(stream: &mut TcpStream, app_dir: &Path) -> Result<(), Str
 
 fn run_dev_server(app_dir: &Path) -> Result<(), String> {
     let port = dev_server_port();
-    let bind_addr = format!("127.0.0.1:{port}");
+    let bind_addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&bind_addr)
         .map_err(|err| format!("failed to bind dev server on {bind_addr}: {err}"))?;
 
